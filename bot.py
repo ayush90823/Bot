@@ -230,19 +230,40 @@ def save_to_firebase(anime_id, season, ep_num, quality_dict):
 #   STORAGE FORWARD
 # ══════════════════════════════════════════════════════
 
-def forward_to_storage(from_chat_id, msg_id, new_caption):
-    try:
-        sent = bot.copy_message(
-            chat_id      = STORAGE_CHANNEL,
-            from_chat_id = from_chat_id,
-            message_id   = msg_id,
-            caption      = new_caption,
-        )
-        # Link format: https://t.me/BotUsername?start=MSG_ID
-        return f"https://t.me/{BOT_USERNAME}?start={sent.message_id}"
-    except Exception as e:
-        print(f"  ❌ Forward error: {e}")
-        return None
+def forward_to_storage(from_chat_id, msg_id, new_caption, retries=5):
+    for attempt in range(retries):
+        try:
+            sent = bot.copy_message(
+                chat_id      = STORAGE_CHANNEL,
+                from_chat_id = from_chat_id,
+                message_id   = msg_id,
+                caption      = new_caption,
+            )
+            # Link format: https://t.me/BotUsername?start=MSG_ID
+            return f"https://t.me/{BOT_USERNAME}?start={sent.message_id}"
+
+        except Exception as e:
+            err = str(e)
+            print(f"  ❌ Forward error (attempt {attempt+1}/{retries}): {err}")
+
+            # Telegram rate limit → wait_secs nikaalo aur ruko
+            if "retry after" in err.lower() or "429" in err:
+                wait = 30  # default
+                match = re.search(r'retry after (\d+)', err, re.IGNORECASE)
+                if match:
+                    wait = int(match.group(1)) + 2
+                print(f"  ⏳ Rate limited! {wait} sec ruk ke retry...")
+                time.sleep(wait)
+
+            # Last attempt fail → None return
+            elif attempt == retries - 1:
+                return None
+
+            # Doosri errors pe thoda wait karke retry
+            else:
+                time.sleep(3)
+
+    return None
 
 # ══════════════════════════════════════════════════════
 #   PROCESS EPISODE
@@ -273,6 +294,7 @@ def process_ep(chat_id, ep_num, files):
         link = forward_to_storage(f["chat_id"], f["msg_id"], caption)
         if link:
             quality_dict[quality] = link
+        time.sleep(1)  # har file ke baad 1 sec — rate limit avoid
 
     saved_key = save_to_firebase(anime_id, season, ep_num, quality_dict)
     session["done_eps"] += 1
@@ -372,6 +394,7 @@ def cmd_done(msg):
         for ep_num in sorted(pending):
             files = ep_buffer.pop(ep_num)
             process_ep(msg.chat.id, ep_num, files)
+            time.sleep(2)  # episodes ke beech 2 sec gap
 
     total = session["done_eps"]
     bot.send_message(msg.chat.id, f"""
@@ -540,4 +563,4 @@ while True:
         print(f"  Crash: {e}")
         print("  10 sec mein restart...")
         time.sleep(10)
-    
+          
