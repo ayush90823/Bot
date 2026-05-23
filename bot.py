@@ -32,34 +32,11 @@ ALLOWED_USER    = 7373324949
 
 STORAGE_CHANNEL = -1003963251495
 FIREBASE_URL    = "https://animeverse-9eada-default-rtdb.firebaseio.com/"
-# Force Join Channels
-FORCE_JOIN_CHANNELS = ["@animeverse648", "@versebackup"]
 
 # Kitni qualities per episode? (3 = 480p+720p+1080p)
 # Jab yeh count pura ho → auto save
 QUALITIES_PER_EP = 3
 
-def get_not_joined(user_id):
-    not_joined = []
-    for ch in FORCE_JOIN_CHANNELS:
-        try:
-            status = bot.get_chat_member(ch, user_id).status
-            if status in ["left", "kicked", "banned"]:
-                not_joined.append(ch)
-        except:
-            not_joined.append(ch)
-    return not_joined
-
-def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
-    buttons = []
-    for ch in not_joined:
-        link = f"https://t.me/{ch.lstrip('@')}"
-        buttons.append([telebot.types.InlineKeyboardButton(f"📢 {ch} — Join Karo", url=link)])
-    if pending_msg_id:
-        retry_url = f"https://t.me/{BOT_USERNAME}?start={pending_msg_id}"
-        buttons.append([telebot.types.InlineKeyboardButton("✅ Join kar liya — Try Again", url=retry_url)])
-    markup = telebot.types.InlineKeyboardMarkup(buttons)
-    bot.send_message(chat_id, "🔒 *Pehle channel join karo!*\n\nJoin karo phir Try Again dabao 👇", parse_mode="Markdown", reply_markup=markup)
 # ══════════════════════════════════════════════════════
 #   FIREBASE INIT
 # ══════════════════════════════════════════════════════
@@ -347,14 +324,6 @@ def cmd_start(msg):
     if len(args) > 1:
         try:
             msg_id = int(args[1])
-
-            # Force Join Check
-            if FORCE_JOIN_CHANNELS:
-                not_joined = get_not_joined(msg.from_user.id)
-                if not_joined:
-                    send_force_join_msg(msg.chat.id, not_joined, pending_msg_id=msg_id)
-                    return
-
             bot.copy_message(
                 chat_id      = msg.chat.id,
                 from_chat_id = STORAGE_CHANNEL,
@@ -364,6 +333,7 @@ def cmd_start(msg):
             print(f"Delivery error: {e}")
             bot.reply_to(msg, "❌ File nahi mili. Link expire ho gaya ya galat hai.")
         return
+
     # Admin ka /start — help dikhao
     if msg.from_user.id == ALLOWED_USER:
         bot.reply_to(msg, """
