@@ -5,11 +5,11 @@ Install:  pip install pyTelegramBotAPI firebase-admin flask
 Run:      python bot.py
 
 Flow:
-  1. /setup anime-id S1   -> set anime and season (once)
-  2. Send all files together (any order)
-  3. Bot auto-detects Episode + Quality from caption
-  4. Groups same episode files -> Storage -> Firebase save
-  5. /done -> confirm when all files are sent
+  1. /setup anime-id S1   → anime aur season set karo (ek baar)
+  2. Saari files ek saath forward karo (kisi bhi order mein)
+  3. Bot caption se Episode + Quality auto-detect karega
+  4. Same episode ki files group → Storage → Firebase save
+  5. /done → sab complete hone pe confirm karo
 """
 
 import re
@@ -23,24 +23,29 @@ from firebase_admin import credentials, db
 from flask import Flask
 
 # ══════════════════════════════════════════════════════
-#   SETTINGS
+#   SETTINGS — Sirf yahan apna data daalo
 # ══════════════════════════════════════════════════════
 
 BOT_TOKEN       = os.environ.get("BOT_TOKEN", "")
-BOT_USERNAME    = "D0file_Bot"
+BOT_USERNAME    = "D0file_Bot"         # @ke bina
 ALLOWED_USER    = 7373324949
 
 STORAGE_CHANNEL = -1003963251495
 FIREBASE_URL    = "https://animeverse-9eada-default-rtdb.firebaseio.com/"
 
-QUALITIES_PER_EP = 3
-
-# Force Join — users must join these channels before receiving files
-# To disable: FORCE_JOIN_CHANNELS = []
+# ─── Force Join Settings ───────────────────────────────
+# User ko file milne se pehle yeh channels join karne honge
+# Apne channel ka @username daalo, multiple bhi ho sakte hain
+# Band karna ho to: FORCE_JOIN_CHANNELS = []
 FORCE_JOIN_CHANNELS = [
     {"id": "@animeverse648",  "name": "AnimeVerse"},
     {"id": -1003738679711,    "name": "AnimeVerse Backup"},
 ]
+# ──────────────────────────────────────────────────────
+
+# Kitni qualities per episode? (3 = 480p+720p+1080p)
+# Jab yeh count pura ho → auto save
+QUALITIES_PER_EP = 3
 
 # ══════════════════════════════════════════════════════
 #   FIREBASE INIT
@@ -58,6 +63,7 @@ firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
 bot = telebot.TeleBot(BOT_TOKEN)
 
 _cid = str(STORAGE_CHANNEL).replace("-100", "")
+# Delivery link format: https://t.me/BOT_USERNAME?start=MSG_ID
 
 # ══════════════════════════════════════════════════════
 #   STATE
@@ -69,6 +75,7 @@ session = {
     "done_eps" : 0,
 }
 
+# ep_buffer[ep_num] = [ {chat_id, msg_id, size, quality}, ... ]
 ep_buffer = {}
 
 def reset_all():
@@ -149,7 +156,7 @@ def home():
   </div>
   <div class="card">
     <h3>Buffer Details</h3>
-    {"<ul>" + buf_rows + "</ul>" if buf_rows else '<div class="empty">Buffer is empty ✅</div>'}
+    {"<ul>" + buf_rows + "</ul>" if buf_rows else '<div class="empty">Buffer khaali hai ✅</div>'}
   </div>
   <footer>@{BOT_USERNAME} &nbsp;·&nbsp; Auto refresh 10s</footer>
 </body>
@@ -168,27 +175,47 @@ def run_flask():
 # ══════════════════════════════════════════════════════
 
 def parse_caption(text: str):
+    """
+    Caption/filename se episode number aur quality nikaalega.
+
+    Episode detect priority:
+      1. EPISODE/EP keyword ke baad number  → "EPISODE - 07", "EP04"
+      2. E + number                         → "E09", "E40"
+      3. Standalone 1-2 digit number        → "07", "11", "40"
+
+    Quality detect:
+      480p / 720p / 1080p → direct use
+      Nahi mila → size se fallback (caller mein)
+
+    Returns: (ep_num: int or None, quality: str or None)
+    """
     if not text:
         return None, None
 
     t = text.upper()
+
+    # --- Episode detect ---
     ep_num = None
 
+    # Priority 1: EPISODE/EP keyword ke baad number
     ep_match = re.search(r'\bEP(?:ISODE)?\s*[-:→►\s]*\s*(\d{1,3})\b', t)
     if ep_match:
         ep_num = int(ep_match.group(1))
 
+    # Priority 2: E + number (E09, E40)
     if not ep_num:
         e_match = re.search(r'\bE(\d{1,3})\b', t)
         if e_match:
             ep_num = int(e_match.group(1))
 
+    # Priority 3: standalone 1-2 digit number (season number remove karke)
     if not ep_num:
         cleaned = re.sub(r'\bS\d{1,2}\b', '', t)
         nums = re.findall(r'\b(\d{1,2})\b', cleaned)
         if nums:
             ep_num = int(nums[0])
 
+    # --- Quality detect ---
     quality = None
     q_match = re.search(r'\b(1080P|720P|480P)\b', t)
     if q_match:
@@ -203,10 +230,10 @@ def parse_caption(text: str):
 def save_to_firebase(anime_id, season, ep_num, quality_dict):
     ep_key = f"E{ep_num}"
     if not quality_dict:
-        print(f"  Warning: Empty dict — skip Firebase for {ep_key}")
+        print(f"  ⚠️ Empty dict — skip Firebase for {ep_key}")
         return ep_key
     db.reference(f"anime_links/{anime_id}/{season}/{ep_key}").update(quality_dict)
-    print(f"  Saved: anime_links/{anime_id}/{season}/{ep_key}")
+    print(f"  ✅ Firebase: anime_links/{anime_id}/{season}/{ep_key}")
     return ep_key
 
 # ══════════════════════════════════════════════════════
@@ -222,21 +249,27 @@ def forward_to_storage(from_chat_id, msg_id, new_caption, retries=5):
                 message_id   = msg_id,
                 caption      = new_caption,
             )
+            # Link format: https://t.me/BotUsername?start=MSG_ID
             return f"https://t.me/{BOT_USERNAME}?start={sent.message_id}"
 
         except Exception as e:
             err = str(e)
-            print(f"  Forward error (attempt {attempt+1}/{retries}): {err}")
+            print(f"  ❌ Forward error (attempt {attempt+1}/{retries}): {err}")
 
+            # Telegram rate limit → wait_secs nikaalo aur ruko
             if "retry after" in err.lower() or "429" in err:
-                wait = 30
+                wait = 30  # default
                 match = re.search(r'retry after (\d+)', err, re.IGNORECASE)
                 if match:
                     wait = int(match.group(1)) + 2
-                print(f"  Rate limited! Waiting {wait}s...")
+                print(f"  ⏳ Rate limited! {wait} sec ruk ke retry...")
                 time.sleep(wait)
+
+            # Last attempt fail → None return
             elif attempt == retries - 1:
                 return None
+
+            # Doosri errors pe thoda wait karke retry
             else:
                 time.sleep(3)
 
@@ -251,6 +284,7 @@ def process_ep(chat_id, ep_num, files):
     season   = session["season"]
     ep_key   = f"E{ep_num}"
 
+    # Size ke hisaab se sort — chota=480p, beech=720p, bada=1080p
     sorted_files = sorted(files, key=lambda x: x["size"])
     quality_map = {0: "480p", 1: "720p", 2: "1080p"}
     for i, f in enumerate(sorted_files):
@@ -270,7 +304,7 @@ def process_ep(chat_id, ep_num, files):
         link = forward_to_storage(f["chat_id"], f["msg_id"], caption)
         if link:
             quality_dict[quality] = link
-        time.sleep(1)
+        time.sleep(1)  # har file ke baad 1 sec — rate limit avoid
 
     saved_key = save_to_firebase(anime_id, season, ep_num, quality_dict)
     session["done_eps"] += 1
@@ -285,7 +319,7 @@ def process_ep(chat_id, ep_num, files):
     else:
         bot.send_message(chat_id, f"""
 ❌ *{saved_key} Failed!*
-Make the bot an *Admin* of the storage channel!
+Bot ko storage channel ka *Admin* banao!
 """, parse_mode="Markdown")
 
 # ══════════════════════════════════════════════════════
@@ -293,38 +327,35 @@ Make the bot an *Admin* of the storage channel!
 # ══════════════════════════════════════════════════════
 
 def get_not_joined(user_id):
-    """Return list of channels the user has NOT joined yet."""
+    """Return list of channels jisme user joined nahi hai."""
     not_joined = []
     for ch in FORCE_JOIN_CHANNELS:
         try:
-            status = bot.get_chat_member(ch["id"], user_id).status
+            status = bot.get_chat_member(ch, user_id).status
             if status in ["left", "kicked", "banned"]:
                 not_joined.append(ch)
         except Exception as e:
-            print(f"  Force join check error ({ch['id']}): {e}")
-            not_joined.append(ch)
+            print(f"  ⚠️ Force join check error ({ch}): {e}")
+            not_joined.append(ch)  # error aaye to bhi block karo
     return not_joined
 
 def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
-    """Send join message with buttons for each unjoined channel."""
+    """Join karne ka message buttons ke saath bhejo."""
     buttons = []
     for ch in not_joined:
-        ch_id = ch["id"]
-        name  = ch["name"]
-        if str(ch_id).startswith("@"):
-            link = f"https://t.me/{ch_id.lstrip('@')}"
-        else:
-            link = f"https://t.me/+NTwASrMqhr84NTll"
-        buttons.append([telebot.types.InlineKeyboardButton(f"📢 Join {name}", url=link)])
+        link = f"https://t.me/{ch.lstrip('@')}" if str(ch).startswith("@") else f"https://t.me/c/{str(ch).replace('-100', '')}"
+        buttons.append([telebot.types.InlineKeyboardButton(f"📢 {ch} — Join Karo", url=link)])
 
+    # Try Again button — wahi link dobara open karega
     if pending_msg_id:
         retry_url = f"https://t.me/{BOT_USERNAME}?start={pending_msg_id}"
-        buttons.append([telebot.types.InlineKeyboardButton("✅ I've Joined — Try Again", url=retry_url)])
+        buttons.append([telebot.types.InlineKeyboardButton("✅ Join kar liya — Try Again", url=retry_url)])
 
+    markup = telebot.types.InlineKeyboardMarkup(buttons)
     markup = telebot.types.InlineKeyboardMarkup(buttons)
     bot.send_message(
         chat_id,
-        "🔒 *You need to join our channels to receive files!*\n\nJoin the channels below, then press *I've Joined — Try Again* 👇",
+        "🔒 *File lene ke liye pehle channel join karo!*\n\nNeeche diye channel join karo, phir *Try Again* dabao 👇",
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -332,18 +363,43 @@ def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
 # ══════════════════════════════════════════════════════
 #   COMMANDS
 # ══════════════════════════════════════════════════════
+def get_not_joined(user_id):
+    not_joined = []
+    for ch in FORCE_JOIN_CHANNELS:
+        try:
+            status = bot.get_chat_member(ch["id"], user_id).status
+            if status in ["left", "kicked", "banned"]:
+                not_joined.append(ch)
+        except Exception as e:
+            not_joined.append(ch)
+    return not_joined
+
+def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
+    buttons = []
+    for ch in not_joined:
+        ch_id = ch["id"]
+        name  = ch["name"]
+        if str(ch_id).startswith("@"):
+            link = f"https://t.me/{ch_id.lstrip('@')}"
+        else:
+            link = "https://t.me/+NTwASrMqhr84NTll"
+        buttons.append([telebot.types.InlineKeyboardButton(f"📢 Join {name}", url=link)])
+    if pending_msg_id:
+        retry_url = f"https://t.me/{BOT_USERNAME}?start={pending_msg_id}"
+        buttons.append([telebot.types.InlineKeyboardButton("✅ I've Joined — Try Again", url=retry_url)])
+    markup = telebot.types.InlineKeyboardMarkup(buttons)
+    bot.send_message(chat_id, "🔒 *You need to join our channels to receive files!*\n\nJoin the channels below, then press *I've Joined — Try Again* 👇", parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     args = msg.text.split()
 
-    # User opened via ?start=MSG_ID link → deliver file
+    # User ne ?start=MSG_ID se open kiya → file deliver karo
     if len(args) > 1:
         try:
             msg_id = int(args[1])
 
-            # Force Join Check — only show unjoined channels
-            if FORCE_JOIN_CHANNELS:
+         if FORCE_JOIN_CHANNELS:
                 not_joined = get_not_joined(msg.from_user.id)
                 if not_joined:
                     send_force_join_msg(msg.chat.id, not_joined, pending_msg_id=msg_id)
@@ -356,22 +412,22 @@ def cmd_start(msg):
             )
         except Exception as e:
             print(f"Delivery error: {e}")
-            bot.reply_to(msg, "❌ File not found. The link may have expired or is invalid.")
+            bot.reply_to(msg, "❌ File nahi mili. Link expire ho gaya ya galat hai.")
         return
 
-    # Admin /start — show help
+    # Admin ka /start — help dikhao
     if msg.from_user.id == ALLOWED_USER:
         bot.reply_to(msg, """
 🎌 *AnimeVerse Upload Bot v2*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 *Step 1:* `/setup anime-id S1`
-*Step 2:* Forward all files together
-*Step 3:* `/done` when all files are sent
+*Step 2:* Saari files forward karo ek saath
+*Step 3:* `/done` jab sab bhej do
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 *Other commands:*
-📋 `/status` — view buffer
+📋 `/status` — buffer dekho
 🔍 `/check anime-id S1 5`
 🗑 `/delete anime-id S1 5`
 🔄 `/reset`
@@ -401,8 +457,8 @@ def cmd_setup(msg):
 📺 Anime: `{anime_id}`
 🎬 Season: `{season}`
 
-Send all files now! 🚀
-Bot will auto-detect episode & quality from caption.
+Ab saari files ek saath forward karo! 🚀
+Bot caption dekh ke khud group karega.
 """, parse_mode="Markdown")
     except:
         bot.reply_to(msg, "❌ Format: `/setup anime-id S1`", parse_mode="Markdown")
@@ -414,20 +470,20 @@ def cmd_done(msg):
         return
     pending = list(ep_buffer.keys())
     if pending:
-        bot.reply_to(msg, f"⚙️ *Processing {len(pending)} pending episodes...*",
+        bot.reply_to(msg, f"⚙️ *{len(pending)} pending episodes process ho rahe hain...*",
                      parse_mode="Markdown")
         for ep_num in sorted(pending):
             files = ep_buffer.pop(ep_num)
             process_ep(msg.chat.id, ep_num, files)
-            time.sleep(2)
+            time.sleep(2)  # episodes ke beech 2 sec gap
 
     total = session["done_eps"]
     bot.send_message(msg.chat.id, f"""
-🏁 *All Done!*
-✅ *{total} episodes* saved to Firebase!
+🏁 *Sab Complete!*
+✅ *{total} episodes* Firebase mein save!
 📺 `{session['anime_id']}` | `{session['season']}`
 
-Use `/setup` for a new season.
+Naya season ke liye `/setup` karo.
 """, parse_mode="Markdown")
 
 
@@ -436,7 +492,7 @@ def cmd_status(msg):
     if msg.from_user.id != ALLOWED_USER:
         return
     if not session["anime_id"]:
-        bot.reply_to(msg, "ℹ️ No active session.\nUse `/setup anime-id S1` to start.")
+        bot.reply_to(msg, "ℹ️ Koi session nahi.\n`/setup anime-id S1` se shuru karo.")
         return
     lines = [
         f"📋 *Status:*\n━━━━━━━━━━━━━━━━━━━━",
@@ -456,7 +512,7 @@ def cmd_reset(msg):
     if msg.from_user.id != ALLOWED_USER:
         return
     reset_all()
-    bot.reply_to(msg, "🔄 *Reset done!* Use `/setup anime-id S1` to start.", parse_mode="Markdown")
+    bot.reply_to(msg, "🔄 *Reset done!* `/setup anime-id S1` se shuru karo.", parse_mode="Markdown")
 
 
 @bot.message_handler(commands=["check"])
@@ -475,7 +531,7 @@ def cmd_check(msg):
                 lines.append(f"• {q}: `{str(link)[:55]}`")
             bot.reply_to(msg, "\n".join(lines), parse_mode="Markdown")
         else:
-            bot.reply_to(msg, f"❌ E{ep_num} not found in Firebase.")
+            bot.reply_to(msg, f"❌ E{ep_num} Firebase mein nahi mila")
     except:
         bot.reply_to(msg, "❌ Format: `/check anime-id S1 5`", parse_mode="Markdown")
 
@@ -505,7 +561,7 @@ def handle_file(msg):
         return
 
     if not session["anime_id"]:
-        bot.reply_to(msg, "❌ Please run `/setup anime-id S1` first!", parse_mode="Markdown")
+        bot.reply_to(msg, "❌ Pehle `/setup anime-id S1` karo!", parse_mode="Markdown")
         return
 
     file_obj  = msg.document or msg.video
@@ -513,24 +569,27 @@ def handle_file(msg):
     file_name = getattr(file_obj, "file_name", None) or "video"
     caption   = msg.caption or ""
 
+    # Sirf episode number detect karo (quality size se assign hogi)
     ep_num, _ = parse_caption(caption)
     if not ep_num:
         ep_num, _ = parse_caption(file_name)
 
     if not ep_num:
-        bot.reply_to(msg, f"⚠️ *Episode not detected!*\nCaption: `{caption[:80]}`\nCaption must contain `Episode - 04` or `E04`.", parse_mode="Markdown")
+        bot.reply_to(msg, f"⚠️ *Episode detect nahi hua!*\nCaption: `{caption[:80]}`\nCaption mein `Episode - 04` ya `E04` hona chahiye.", parse_mode="Markdown")
         return
 
-    quality = "pending"
+    quality = "pending"  # Size se assign hogi process_ep mein
 
+    # Buffer mein add
     if ep_num not in ep_buffer:
         ep_buffer[ep_num] = []
 
     ep_key = f"E{ep_num}"
 
+    # Duplicate file check — same size ki file dobara aayi?
     existing_sizes = [f["size"] for f in ep_buffer[ep_num]]
     if file_size in existing_sizes:
-        bot.reply_to(msg, f"⚠️ *{ep_key} — Duplicate file detected! Skipping.*", parse_mode="Markdown")
+        bot.reply_to(msg, f"⚠️ *{ep_key} — Same file dobara aai! Skip kar raha hoon.*", parse_mode="Markdown")
         return
 
     ep_buffer[ep_num].append({
@@ -547,7 +606,7 @@ def handle_file(msg):
     if count >= QUALITIES_PER_EP:
         bot.reply_to(msg, f"""
 📥 `{quality}` | `{size_mb}MB`
-⚙️ *{ep_key} complete! Saving...*
+⚙️ *{ep_key} complete! Save ho raha hai...*
 """, parse_mode="Markdown")
         files = ep_buffer.pop(ep_num)
         process_ep(msg.chat.id, ep_num, files)
@@ -555,7 +614,7 @@ def handle_file(msg):
         remaining = QUALITIES_PER_EP - count
         bot.reply_to(msg, f"""
 📥 `{quality}` | `{size_mb}MB`
-📦 *{ep_key}:* {count}/{QUALITIES_PER_EP} | *{remaining}* more needed
+📦 *{ep_key}:* {count}/{QUALITIES_PER_EP} | aur *{remaining}* chahiye
 """, parse_mode="Markdown")
 
 # ══════════════════════════════════════════════════════
@@ -563,9 +622,9 @@ def handle_file(msg):
 # ══════════════════════════════════════════════════════
 
 print("=" * 50)
-print("  AnimeVerse Bot v2 — Caption Mode")
-print(f"  Storage: t.me/c/{_cid}/")
-print("  Press Ctrl+C to stop")
+print("  🤖 AnimeVerse Bot v2 — Caption Mode")
+print(f"  📦 Storage: t.me/c/{_cid}/")
+print("  Ctrl+C se band karo")
 print("=" * 50)
 
 flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -574,7 +633,7 @@ print("  Web server started")
 
 while True:
     try:
-        print("  Bot polling started...")
+        print("  Bot polling shuru...")
         bot.polling(
             none_stop=True,
             interval=1,
@@ -583,5 +642,6 @@ while True:
         )
     except Exception as e:
         print(f"  Crash: {e}")
-        print("  Restarting in 10s...")
+        print("  10 sec mein restart...")
         time.sleep(10)
+
