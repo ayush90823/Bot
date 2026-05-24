@@ -32,16 +32,10 @@ ALLOWED_USER    = 7373324949
 
 STORAGE_CHANNEL = -1003963251495
 FIREBASE_URL    = "https://animeverse-9eada-default-rtdb.firebaseio.com/"
-
-# ─── Force Join Settings ───────────────────────────────
-# User ko file milne se pehle yeh channels join karne honge
-# Apne channel ka @username daalo, multiple bhi ho sakte hain
-# Band karna ho to: FORCE_JOIN_CHANNELS = []
 FORCE_JOIN_CHANNELS = [
     {"id": "@animeverse648",  "name": "AnimeVerse"},
     {"id": -1003738679711,    "name": "AnimeVerse Backup"},
 ]
-# ──────────────────────────────────────────────────────
 
 # Kitni qualities per episode? (3 = 480p+720p+1080p)
 # Jab yeh count pura ho → auto save
@@ -323,44 +317,6 @@ Bot ko storage channel ka *Admin* banao!
 """, parse_mode="Markdown")
 
 # ══════════════════════════════════════════════════════
-#   FORCE JOIN HELPERS
-# ══════════════════════════════════════════════════════
-
-def get_not_joined(user_id):
-    """Return list of channels jisme user joined nahi hai."""
-    not_joined = []
-    for ch in FORCE_JOIN_CHANNELS:
-        try:
-            status = bot.get_chat_member(ch, user_id).status
-            if status in ["left", "kicked", "banned"]:
-                not_joined.append(ch)
-        except Exception as e:
-            print(f"  ⚠️ Force join check error ({ch}): {e}")
-            not_joined.append(ch)  # error aaye to bhi block karo
-    return not_joined
-
-def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
-    """Join karne ka message buttons ke saath bhejo."""
-    buttons = []
-    for ch in not_joined:
-        link = f"https://t.me/{ch.lstrip('@')}" if str(ch).startswith("@") else f"https://t.me/c/{str(ch).replace('-100', '')}"
-        buttons.append([telebot.types.InlineKeyboardButton(f"📢 {ch} — Join Karo", url=link)])
-
-    # Try Again button — wahi link dobara open karega
-    if pending_msg_id:
-        retry_url = f"https://t.me/{BOT_USERNAME}?start={pending_msg_id}"
-        buttons.append([telebot.types.InlineKeyboardButton("✅ Join kar liya — Try Again", url=retry_url)])
-
-    markup = telebot.types.InlineKeyboardMarkup(buttons)
-    markup = telebot.types.InlineKeyboardMarkup(buttons)
-    bot.send_message(
-        chat_id,
-        "🔒 *File lene ke liye pehle channel join karo!*\n\nNeeche diye channel join karo, phir *Try Again* dabao 👇",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-
-# ══════════════════════════════════════════════════════
 #   COMMANDS
 # ══════════════════════════════════════════════════════
 def get_not_joined(user_id):
@@ -370,7 +326,7 @@ def get_not_joined(user_id):
             status = bot.get_chat_member(ch["id"], user_id).status
             if status in ["left", "kicked", "banned"]:
                 not_joined.append(ch)
-        except Exception as e:
+        except:
             not_joined.append(ch)
     return not_joined
 
@@ -389,17 +345,16 @@ def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
         buttons.append([telebot.types.InlineKeyboardButton("✅ I've Joined — Try Again", url=retry_url)])
     markup = telebot.types.InlineKeyboardMarkup(buttons)
     bot.send_message(chat_id, "🔒 *You need to join our channels to receive files!*\n\nJoin the channels below, then press *I've Joined — Try Again* 👇", parse_mode="Markdown", reply_markup=markup)
-
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     args = msg.text.split()
 
     # User ne ?start=MSG_ID se open kiya → file deliver karo
-    if len(args) > 1:
+   if len(args) > 1:
         try:
             msg_id = int(args[1])
 
-         if FORCE_JOIN_CHANNELS:
+            if FORCE_JOIN_CHANNELS:
                 not_joined = get_not_joined(msg.from_user.id)
                 if not_joined:
                     send_force_join_msg(msg.chat.id, not_joined, pending_msg_id=msg_id)
@@ -645,3 +600,4 @@ while True:
         print("  10 sec mein restart...")
         time.sleep(10)
 
+  
