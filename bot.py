@@ -296,8 +296,10 @@ def get_not_joined(user_id):
             status = bot.get_chat_member(ch["id"], user_id).status
             if status in ["left", "kicked", "banned"]:
                 not_joined.append(ch)
-        except:
-            not_joined.append(ch)
+        except Exception as e:
+            err = str(e).lower()
+            if "user not found" in err or "participant" in err:
+                not_joined.append(ch)
     return not_joined
 
 def send_force_join_msg(chat_id, not_joined, pending_msg_id=None):
