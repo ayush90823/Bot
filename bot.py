@@ -1,7 +1,7 @@
 """
 AnimeVerse Upload Bot — Caption Auto-Detect Mode
 =================================================
-Install:  pip install pyTelegramBotAPI firebase-admin flask
+Install:  pip install pyTelegramBotAPI requests flask
 Run:      python bot.py
 
 Flow:
@@ -17,9 +17,8 @@ import os
 import json
 import time
 import threading
+import requests
 import telebot
-import firebase_admin
-from firebase_admin import credentials, db
 from flask import Flask
 
 # ══════════════════════════════════════════════════════
@@ -31,29 +30,18 @@ BOT_USERNAME    = "D0file_Bot"         # @ke bina
 ALLOWED_USER    = 7373324949
 
 STORAGE_CHANNEL = -1003963251495
-FIREBASE_URL    = "https://animeverse-9eada-default-rtdb.firebaseio.com/"
+FIREBASE_URL    = "https://animeverse-9eada-default-rtdb.firebaseio.com"
 
 # Kitni qualities per episode? (3 = 480p+720p+1080p)
-# Jab yeh count pura ho → auto save
 QUALITIES_PER_EP = 3
 
 # ══════════════════════════════════════════════════════
-#   FIREBASE INIT
+#   BOT INIT
 # ══════════════════════════════════════════════════════
-
-firebase_key_env = os.environ.get("FIREBASE_KEY")
-if firebase_key_env:
-    firebase_key = json.loads(firebase_key_env)
-    cred = credentials.Certificate(firebase_key)
-else:
-    cred = credentials.Certificate("key.json")
-
-firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 _cid = str(STORAGE_CHANNEL).replace("-100", "")
-# Delivery link format: https://t.me/BOT_USERNAME?start=MSG_ID
 
 # ══════════════════════════════════════════════════════
 #   STATE
@@ -165,47 +153,28 @@ def run_flask():
 # ══════════════════════════════════════════════════════
 
 def parse_caption(text: str):
-    """
-    Caption/filename se episode number aur quality nikaalega.
-
-    Episode detect priority:
-      1. EPISODE/EP keyword ke baad number  → "EPISODE - 07", "EP04"
-      2. E + number                         → "E09", "E40"
-      3. Standalone 1-2 digit number        → "07", "11", "40"
-
-    Quality detect:
-      480p / 720p / 1080p → direct use
-      Nahi mila → size se fallback (caller mein)
-
-    Returns: (ep_num: int or None, quality: str or None)
-    """
     if not text:
         return None, None
 
     t = text.upper()
 
-    # --- Episode detect ---
     ep_num = None
 
-    # Priority 1: EPISODE/EP keyword ke baad number
     ep_match = re.search(r'\bEP(?:ISODE)?\s*[-:→►\s]*\s*(\d{1,3})\b', t)
     if ep_match:
         ep_num = int(ep_match.group(1))
 
-    # Priority 2: E + number (E09, E40)
     if not ep_num:
         e_match = re.search(r'\bE(\d{1,3})\b', t)
         if e_match:
             ep_num = int(e_match.group(1))
 
-    # Priority 3: standalone 1-2 digit number (season number remove karke)
     if not ep_num:
         cleaned = re.sub(r'\bS\d{1,2}\b', '', t)
         nums = re.findall(r'\b(\d{1,2})\b', cleaned)
         if nums:
             ep_num = int(nums[0])
 
-    # --- Quality detect ---
     quality = None
     q_match = re.search(r'\b(1080P|720P|480P)\b', t)
     if q_match:
@@ -214,7 +183,7 @@ def parse_caption(text: str):
     return ep_num, quality
 
 # ══════════════════════════════════════════════════════
-#   FIREBASE
+#   FIREBASE — REST API (No credentials needed)
 # ══════════════════════════════════════════════════════
 
 def save_to_firebase(anime_id, season, ep_num, quality_dict):
@@ -222,9 +191,37 @@ def save_to_firebase(anime_id, season, ep_num, quality_dict):
     if not quality_dict:
         print(f"  ⚠️ Empty dict — skip Firebase for {ep_key}")
         return ep_key
-    db.reference(f"anime_links/{anime_id}/{season}/{ep_key}").update(quality_dict)
-    print(f"  ✅ Firebase: anime_links/{anime_id}/{season}/{ep_key}")
+
+    url = f"{FIREBASE_URL}/anime_links/{anime_id}/{season}/{ep_key}.json"
+    try:
+        response = requests.patch(url, json=quality_dict, timeout=10)
+        if response.status_code == 200:
+            print(f"  ✅ Firebase: anime_links/{anime_id}/{season}/{ep_key}")
+        else:
+            print(f"  ❌ Firebase error {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"  ❌ Firebase exception: {e}")
+
     return ep_key
+
+def get_from_firebase(anime_id, season, ep_num):
+    url = f"{FIREBASE_URL}/anime_links/{anime_id}/{season}/E{ep_num}.json"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"  ❌ Firebase get error: {e}")
+    return None
+
+def delete_from_firebase(anime_id, season, ep_num):
+    url = f"{FIREBASE_URL}/anime_links/{anime_id}/{season}/E{ep_num}.json"
+    try:
+        response = requests.delete(url, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"  ❌ Firebase delete error: {e}")
+    return False
 
 # ══════════════════════════════════════════════════════
 #   STORAGE FORWARD
@@ -239,27 +236,23 @@ def forward_to_storage(from_chat_id, msg_id, new_caption, retries=5):
                 message_id   = msg_id,
                 caption      = new_caption,
             )
-            # Link format: https://t.me/BotUsername?start=MSG_ID
             return f"https://t.me/{BOT_USERNAME}?start={sent.message_id}"
 
         except Exception as e:
             err = str(e)
             print(f"  ❌ Forward error (attempt {attempt+1}/{retries}): {err}")
 
-            # Telegram rate limit → wait_secs nikaalo aur ruko
             if "retry after" in err.lower() or "429" in err:
-                wait = 30  # default
+                wait = 30
                 match = re.search(r'retry after (\d+)', err, re.IGNORECASE)
                 if match:
                     wait = int(match.group(1)) + 2
                 print(f"  ⏳ Rate limited! {wait} sec ruk ke retry...")
                 time.sleep(wait)
 
-            # Last attempt fail → None return
             elif attempt == retries - 1:
                 return None
 
-            # Doosri errors pe thoda wait karke retry
             else:
                 time.sleep(3)
 
@@ -274,7 +267,6 @@ def process_ep(chat_id, ep_num, files):
     season   = session["season"]
     ep_key   = f"E{ep_num}"
 
-    # Size ke hisaab se sort — chota=480p, beech=720p, bada=1080p
     sorted_files = sorted(files, key=lambda x: x["size"])
     quality_map = {0: "480p", 1: "720p", 2: "1080p"}
     for i, f in enumerate(sorted_files):
@@ -294,7 +286,7 @@ def process_ep(chat_id, ep_num, files):
         link = forward_to_storage(f["chat_id"], f["msg_id"], caption)
         if link:
             quality_dict[quality] = link
-        time.sleep(1)  # har file ke baad 1 sec — rate limit avoid
+        time.sleep(1)
 
     saved_key = save_to_firebase(anime_id, season, ep_num, quality_dict)
     session["done_eps"] += 1
@@ -320,7 +312,6 @@ Bot ko storage channel ka *Admin* banao!
 def cmd_start(msg):
     args = msg.text.split()
 
-    # User ne ?start=MSG_ID se open kiya → file deliver karo
     if len(args) > 1:
         try:
             msg_id = int(args[1])
@@ -334,7 +325,6 @@ def cmd_start(msg):
             bot.reply_to(msg, "❌ File nahi mili. Link expire ho gaya ya galat hai.")
         return
 
-    # Admin ka /start — help dikhao
     if msg.from_user.id == ALLOWED_USER:
         bot.reply_to(msg, """
 🎌 *AnimeVerse Upload Bot v2*
@@ -394,7 +384,7 @@ def cmd_done(msg):
         for ep_num in sorted(pending):
             files = ep_buffer.pop(ep_num)
             process_ep(msg.chat.id, ep_num, files)
-            time.sleep(2)  # episodes ke beech 2 sec gap
+            time.sleep(2)
 
     total = session["done_eps"]
     bot.send_message(msg.chat.id, f"""
@@ -443,7 +433,7 @@ def cmd_check(msg):
         anime_id = parts[1]
         season   = parts[2].upper()
         ep_num   = str(parts[3])
-        data = db.reference(f"anime_links/{anime_id}/{season}/E{ep_num}").get()
+        data = get_from_firebase(anime_id, season, ep_num)
         if data:
             lines = [f"📊 *{anime_id} | {season} | E{ep_num}*\n━━━━━━━━━━━━━━━━"]
             for q, link in data.items():
@@ -464,9 +454,12 @@ def cmd_delete(msg):
         anime_id = parts[1]
         season   = parts[2].upper()
         ep_num   = str(parts[3]).zfill(2)
-        db.reference(f"anime_links/{anime_id}/{season}/E{ep_num}").delete()
-        bot.reply_to(msg, f"🗑 *Deleted:* `E{ep_num}`\nPath: `{anime_id}/{season}/E{ep_num}`",
-                     parse_mode="Markdown")
+        success = delete_from_firebase(anime_id, season, ep_num)
+        if success:
+            bot.reply_to(msg, f"🗑 *Deleted:* `E{ep_num}`\nPath: `{anime_id}/{season}/E{ep_num}`",
+                         parse_mode="Markdown")
+        else:
+            bot.reply_to(msg, f"❌ Delete fail hua E{ep_num}", parse_mode="Markdown")
     except:
         bot.reply_to(msg, "❌ Format: `/delete anime-id S1 5`", parse_mode="Markdown")
 
@@ -488,7 +481,6 @@ def handle_file(msg):
     file_name = getattr(file_obj, "file_name", None) or "video"
     caption   = msg.caption or ""
 
-    # Sirf episode number detect karo (quality size se assign hogi)
     ep_num, _ = parse_caption(caption)
     if not ep_num:
         ep_num, _ = parse_caption(file_name)
@@ -497,15 +489,13 @@ def handle_file(msg):
         bot.reply_to(msg, f"⚠️ *Episode detect nahi hua!*\nCaption: `{caption[:80]}`\nCaption mein `Episode - 04` ya `E04` hona chahiye.", parse_mode="Markdown")
         return
 
-    quality = "pending"  # Size se assign hogi process_ep mein
+    quality = "pending"
 
-    # Buffer mein add
     if ep_num not in ep_buffer:
         ep_buffer[ep_num] = []
 
     ep_key = f"E{ep_num}"
 
-    # Duplicate file check — same size ki file dobara aayi?
     existing_sizes = [f["size"] for f in ep_buffer[ep_num]]
     if file_size in existing_sizes:
         bot.reply_to(msg, f"⚠️ *{ep_key} — Same file dobara aai! Skip kar raha hoon.*", parse_mode="Markdown")
@@ -524,7 +514,7 @@ def handle_file(msg):
 
     if count >= QUALITIES_PER_EP:
         bot.reply_to(msg, f"""
-📥 `{quality}` | `{size_mb}MB`
+📥 `{size_mb}MB`
 ⚙️ *{ep_key} complete! Save ho raha hai...*
 """, parse_mode="Markdown")
         files = ep_buffer.pop(ep_num)
@@ -532,7 +522,7 @@ def handle_file(msg):
     else:
         remaining = QUALITIES_PER_EP - count
         bot.reply_to(msg, f"""
-📥 `{quality}` | `{size_mb}MB`
+📥 `{size_mb}MB`
 📦 *{ep_key}:* {count}/{QUALITIES_PER_EP} | aur *{remaining}* chahiye
 """, parse_mode="Markdown")
 
@@ -563,5 +553,3 @@ while True:
         print(f"  Crash: {e}")
         print("  10 sec mein restart...")
         time.sleep(10)
-
-  
